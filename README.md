@@ -90,20 +90,6 @@ parseprompt/
 
 The whole thing is ~3k lines of Python + Bash + Markdown. No magic. Read `docs/ARCHITECTURE.md` and you know how it works.
 
-## What's new in v2.0
-
-v1 shipped one monolithic `routing.py` and a 700-line skill file. v2 splits the skill into a thin orchestrator + four pure-Python lib modules so the classification logic is testable, importable, and reusable outside the skill:
-
-- **`lib/parser.py`** — bullet/sub-item extraction, 8-dimension classification, workspace-type detection, security-flag detection. The behavior that used to live in skill prose now lives in functions you can call.
-- **`lib/dimensions.py`** — trigger-pattern catalog (4.1-4.8), tag mappings per workspace type, format templates for routed items. One file to tweak when you want to teach the parser a new phrase.
-- **`lib/interpretation.py`** — per-item interpretation generator (Step 5.5 v2). Routes on what items *mean* in context (workspace + referenced files/PRs + last assistant turn), not just on surface keywords.
-- **`lib/routing.py`** — `route_text()` per item + `route_prompt()` for the UserPromptSubmit hook. Generic, public-friendly defaults: `PARSEPROMPT_DOMAIN_MAP` env var for custom domain mapping, substring fallback for `frontend` / `backend` / `infra`, `db_path` kwarg with graceful no-DB fallback. Scores capabilities against a SQLite "routing brain" that adjusts keyword weights based on what gets invoked.
-- **`lib/test_*.py`** — 187 unit tests covering every dimension, sub-item splitting, parenthetical inserts, dash comments, tool-output detection, 4.6-vs-4.7 precedence, security flags, conversation context resolution. Run with `python3 -m unittest lib.test_parser lib.test_dimensions lib.test_interpretation`.
-
-New skill: **`/handoff`** — adaptive next-session knowledge-transfer doc (Done-State 30-50 lines, Cliff-Hanger 100-200), pairs with `/session-log` to make session-to-session continuity survive `/compact`.
-
-See `CHANGELOG.md` for the full list.
-
 ## Why this exists
 
 Three categories of prompt-content keep leaking out of normal AI-assisted dev workflows:

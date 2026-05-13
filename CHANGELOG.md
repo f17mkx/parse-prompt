@@ -1,10 +1,10 @@
 # Changelog
 
-All notable changes to parseprompt. Newest at top.
+All notable changes to parseprompt. Newest at top. Follows SemVer: MAJOR for breaking changes, MINOR for backward-compatible additions, PATCH for backward-compatible fixes.
 
-## v2.0.0 - 2026-05-13
+## v1.1.0 - 2026-05-13
 
-Architectural refactor: monolithic skill -> thin orchestrator + pure-Python lib layer.
+Architectural refactor: monolithic skill -> thin orchestrator + pure-Python lib layer. Backward-compatible (`route_prompt` / `route_text` public API unchanged, `lib/routing.py` keeps its v1.0.0 signature).
 
 ### Added
 - `lib/parser.py` (712 lines) - public `classify()` API. Handles bullet/sub-item extraction, 8-dimension assignment, workspace-type detection (`detect_workspace_type` + multi-path `detect_referenced_workspaces`), security-flag detection, parenthetical inserts + dash-comments + tool-output extraction.
@@ -25,10 +25,19 @@ Architectural refactor: monolithic skill -> thin orchestrator + pure-Python lib 
 - **4.6-vs-4.7 precedence** explicit Decision-Tree: `evtl + later -> 4.6`, `evtl alone -> 4.7`, tie without disambiguator -> 4.7 (drops are more painful than over-eval).
 - **v2-pattern Pre-Check-Wrapper**: `evtl X + (vorher pruefen)` triggers small-scope 4.7 not 4.6, because the parenthetical signals "sanity-check first" not "defer".
 
-### Migration notes (v1 -> v2)
-- v1's `lib/routing.py` is still there, behavior-compatible at the public API level. If you were importing `routing.route_prompt`, no change needed.
+### Migration notes (v1.0.0 -> v1.1.0)
+- `lib/routing.py` keeps the v1.0.0 generic API (`PARSEPROMPT_DOMAIN_MAP` env var, `db_path` kwarg, substring fallback). If you were importing `routing.route_prompt` or `routing.route_text`, no change needed.
 - If you were extending the 8-dim classifier by editing `skills/parse-prompt.md` prose: that approach still works, but the recommended path is now to add trigger patterns to `lib/dimensions.py` and let `lib/parser.py classify()` pick them up. Tests guard against regression.
 - If you wrote a custom hook calling the skill via subprocess: the skill is still the entry point; the lib modules are an implementation detail.
+
+### Why MINOR (1.0.0 -> 1.1.0) and not MAJOR
+Every change in v1.1.0 is additive:
+- New `lib/parser.py`, `lib/dimensions.py`, `lib/interpretation.py` modules - importable but not required by existing call sites.
+- New `/handoff` skill - opt-in, doesn't affect existing skills.
+- New tests in `lib/test_*.py` - additive coverage, no behavior change.
+- `lib/routing.py` API surface unchanged from v1.0.0.
+
+No breaking changes -> MINOR bump.
 
 ## v1.0.0 - 2026-04-29
 

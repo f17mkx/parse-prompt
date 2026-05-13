@@ -19,6 +19,5 @@ data/routing.db-wal
 data/routing.db-shm
 
 route-feedback.log
-
 .context/
 session-logs/
