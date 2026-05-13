@@ -14,7 +14,7 @@ Architectural refactor: monolithic skill -> thin orchestrator + pure-Python lib 
 - `skills/handoff.md` - new skill. Adaptive next-session knowledge-transfer doc (Done-State 30-50 lines, Cliff-Hanger 100-200 lines). Pairs with `/session-log` to survive `/compact` lossy summarization between sessions.
 
 ### Changed
-- `lib/routing.py` (209 lines, was 248) - tightened tokenization, clearer entrypoints `route_text(text, context_prefix=...)` for per-item routing and `route_prompt(prompt, ...)` for whole-prompt UserPromptSubmit. Score-blending logic for context-prefixed interpretation now respects domain boost from `PARSEPROMPT_DOMAIN_MAP`.
+- `lib/routing.py` - kept the v1 generic API (env-var-driven `PARSEPROMPT_DOMAIN_MAP`, `db_path` kwarg, substring fallback for `frontend` / `backend` / `infra`). Tests in `tests/test_routing.py` continue to pass against this layer.
 - `README.md` - new "What's new in v2.0" section, updated "What's inside" tree to reflect lib/ split, line count corrected to ~3k.
 
 ### Conceptual additions (live in the parser, documented for users)

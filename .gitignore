@@ -5,7 +5,6 @@ node_modules/
 *.log
 .cache/
 
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -14,17 +13,12 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Routing DB lives outside the repo by default; if bootstrapped inside, ignore.
 data/routing.db
 data/routing.db-journal
 data/routing.db-wal
 data/routing.db-shm
 
-# Feedback log
 route-feedback.log
 
-# Workspace-local state (in case a user's project uses the same .context pattern)
 .context/
-
-# Session logs (these are tracked in the consuming project, not in this template repo)
 session-logs/

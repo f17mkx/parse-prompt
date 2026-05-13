@@ -1,23 +1,23 @@
 """
-Routing library — extracted from hooks/route-prompt.py for re-use.
+Routing library — pure compute + DB read for prompt-to-capability matching.
 
 Two entry points:
-- `route_prompt(prompt, ...)` — for the UserPromptSubmit-Hook (existing behavior)
-- `route_text(text, ...)` — for parse-prompt Step 5.5 per-item routing (NEW Paket B)
+- `route_prompt(prompt, ...)` — used by the UserPromptSubmit hook on the whole prompt
+- `route_text(text, ...)` — used by parse-prompt skill Step 5.5 for per-item routing
 
-Why this split: heretofore route-prompt.py classified the WHOLE prompt and emitted
-top-3 candidates per UserPromptSubmit. Stefan's correction (2026-04-29): a single
-prompt often contains multiple items (Requirements, Future-Work suggestions,
-Questions). Each item needs its own routing recommendation. parse-prompt extracts
-those items in Step 4 — Step 5.5 then calls route_text() per item.
+Why this split: a UserPromptSubmit hook classifies the WHOLE prompt and emits
+top-N candidates. But a single prompt often contains multiple items (Requirements,
+Future-Work suggestions, Questions). Each item benefits from its own routing
+recommendation. parse-prompt extracts those items in Step 4 — Step 5.5 then calls
+route_text() per item.
 
-Score-tuning (also Paket B):
-- MAX_CANDIDATES: 3 -> 5 (more recall)
-- MIN_SCORE: 2.0 -> 1.5 (lower floor; data showed 94% of prompts hit only 2 candidates because of the floor, not the cap)
+Score-tuning defaults:
+- MAX_CANDIDATES: 5 (more recall than 3)
+- MIN_SCORE: 1.5 (lower floor; data showed 94% of prompts hit only 2 candidates
+  because of the floor, not the cap)
 
-The hook still owns the Action Layer (writing .context/todos.md when
-intent=backlog) and the DB-write side-effect (`prompt_classifications` row).
-This module is pure compute + DB read.
+Side effects (DB writes, .context/todos.md auto-append) are owned by the hook
+that calls into this library, NOT by this module. This module is pure compute.
 """
 
 import os
@@ -26,14 +26,21 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
-DB = Path.home() / ".claude" / "data" / "routing.db"
+# Default DB location — overridable via PARSEPROMPT_DB env var or db_path arg.
+# Path matches the install layout: $PARSEPROMPT_ROOT/data/routing.db.
+DEFAULT_DB = Path(os.environ.get("PARSEPROMPT_DB",
+                                 Path.home() / ".parseprompt" / "data" / "routing.db"))
 
-# Tuned defaults — overridable per-call. Old hook used 3/2.0 hardcoded.
+# Tuned defaults — overridable per-call.
 DEFAULT_MAX_CANDIDATES = 5
 DEFAULT_MIN_SCORE = 1.5
 
-# 2026-04-28: backlog promoted to position 1 (was 10) so deferral signals
-# beat broader audit/plan patterns when both match. See ROUTING-AND-PERSISTENCE.md §3
+# Intent classifier (first-match-wins). `backlog` is at position 1 so deferral
+# signals beat broader audit/plan patterns when both match — see ARCHITECTURE.md
+# for the leak-detection rationale.
+#
+# Patterns are bilingual (English + German) by default. Adopters should fork
+# this list for their own languages / Modalpartikeln.
 INTENTS = [
     ("backlog", r"\b(später|spaeter|irgendwann|nicht\s+jetzt|for\s+now|next\s+release|wir\s+könnten|wir\s+koennten|we\s+could|would\s+be\s+nice|wäre\s+eine\s+idee|waere\s+eine\s+idee|could\s+give\s+an\s+option|for\s+inspiration|to\s+draw\s+from|i\s+like\s+the\s+idea|maybe\s+we|vielleicht|hätten\s+wir\s+zeit|haetten\s+wir\s+zeit|wenn\s+wir\s+mal\s+zeit|backlog|remember|merk|add\s+to|in\s+den\s+backlog|speichere)\b"),
     ("ship",    r"\b(create\s+a\s+pr|commit\s+and\s+push|fullmerge|merge\s+onto\s+main|\bship+(en|e|t|est)?\b|deploy|finalize|lande|erledige|pr\s+raus|pull\s+request)\b"),
@@ -48,11 +55,11 @@ INTENTS = [
     ("draft",   r"\b(verfasse|formuliere|schreib\s+mir|draft|reply\s+to|antworte|entwurf|message\s+for)\b"),
     ("docs",    r"\b(dokumentiere|docs|readme|changelog|beschreib|explain\s+in|document)\b"),
     ("investigate", r"\b(was\s+ist\s+los|warum|why\s+(did|is)|analysiere|debug|untersuche|was\s+passiert)\b"),
-    ("meta",    r"\b(skill|agent|routing|parse.prompt|settings\.json|hook|workflow|~/\.claude)\b"),
+    ("meta",    r"\b(skill|agent|routing|parse.prompt|settings\.json|hook|workflow)\b"),
     ("design",  r"\b(design|ui|ux|style|visual|aesthetic|layout|farbe|color|typography)\b"),
-    ("homeassistant", r"\b(home\s+assistant|home-assistant|hassio|zigbee|lovelace|ha\s+mcp|yama.*ha|hacs)\b"),
 ]
 
+# Bilingual stopwords — extend for your own working language.
 STOPWORDS = set("""
 a an the and or but if then else when while für mit von nach bei auf zu zum zur
 der die das ein eine einen einem einer und oder aber wenn dann sonst
@@ -82,7 +89,7 @@ def detect_intent(prompt):
 
 
 def detect_complexity(prompt):
-    """Heuristic 1-5 based on word count + question count + attachments + paths."""
+    """Heuristic 1-5 based on word count + question count + attachments."""
     wc = len(prompt.split())
     q = prompt.count("?")
     attachments = len(re.findall(r"@⟦", prompt))
@@ -92,33 +99,59 @@ def detect_complexity(prompt):
         return 2
     if wc < 300 and attachments <= 1:
         return 3
-    if wc < 800 or attachments <= 3:
+    if wc < 800 and attachments <= 3:
         return 4
     return 5
 
 
+# Workspace-domain mapping. Adopters: replace the example mappings below with
+# substrings that match YOUR repo / workspace names. The goal is to give a 1.5x
+# boost to capabilities scoped to the same project as the cwd.
+#
+# Default mapping recognizes a few generic patterns; if your cwd contains
+# 'project-a', capabilities tagged domain='project-a' will rank higher.
 def detect_workspace_domain(cwd=None):
-    """Map current working directory to a routing domain (boost factor 1.5x)."""
+    """Map current working directory to a routing domain (boost factor 1.5x).
+
+    Override this function or set the PARSEPROMPT_DOMAIN_MAP env var (JSON,
+    {"substring": "domain"}) to provide your own mapping.
+    """
     cwd = (cwd or os.getcwd()).lower()
-    if "placemybooking" in cwd:
-        return "pmb"
-    if "yama" in cwd:
-        return "yama"
-    if "ha-playground" in cwd:
-        return "ha"
-    if "productivity" in cwd:
-        return "productivity"
+    custom = os.environ.get("PARSEPROMPT_DOMAIN_MAP")
+    if custom:
+        try:
+            import json
+            for substring, domain in json.loads(custom).items():
+                if substring.lower() in cwd:
+                    return domain
+        except Exception:
+            pass
+    # Generic fallback patterns — safe defaults if no env var set.
+    if "frontend" in cwd or "web" in cwd:
+        return "frontend"
+    if "backend" in cwd or "api" in cwd:
+        return "backend"
+    if "infra" in cwd or "ops" in cwd:
+        return "infra"
     return "global"
 
 
 def score_capabilities(prompt_keywords, intent, workspace_domain,
                        max_candidates=DEFAULT_MAX_CANDIDATES,
                        min_score=DEFAULT_MIN_SCORE,
-                       db_path=DB):
-    """Rank capabilities by keyword-overlap weight + domain boost. Read-only DB query."""
+                       db_path=None):
+    """Rank capabilities by keyword-overlap weight + domain boost. Read-only DB query.
+
+    Returns [] if DB is missing or unreadable — callers can still rely on intent
+    detection without a routing DB available.
+    """
     if not prompt_keywords:
         return []
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db_path = db_path or DEFAULT_DB
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return []
     cur = conn.cursor()
     scores = {}
     descriptions = {}
@@ -133,12 +166,16 @@ def score_capabilities(prompt_keywords, intent, workspace_domain,
     """, list(prompt_keywords))
     for cap_id, name, kind, domain, desc, _status, _kw, weight in cur.fetchall():
         base = weight
+        # Domain-match boost (1.5x), neutral global (1.0x), de-prio off-domain (0.7x).
+        # 'agency' bucket is for third-party / community capabilities with noisy
+        # keyword maps — they get aggressively de-prioritized (0.5x) so they don't
+        # crowd out your own project-scoped capabilities via random keyword overlap.
         if domain == workspace_domain:
             base *= 1.5
         elif domain == "global":
             base *= 1.0
         elif domain == "agency":
-            base *= 0.5  # de-prio agency-agents (was 0.85, lowered 2026-04-29 after smoke-test showed Carousel Growth Engine matched "PreToolUse Hook" prompts via random keyword overlap; agency-agents have noisy keyword maps)
+            base *= 0.5
         else:
             base *= 0.7
         scores[cap_id] = scores.get(cap_id, 0) + base
@@ -163,41 +200,43 @@ def score_capabilities(prompt_keywords, intent, workspace_domain,
 
 def route_text(text, max_candidates=DEFAULT_MAX_CANDIDATES,
                min_score=DEFAULT_MIN_SCORE, cwd=None, top_keywords_n=50,
-               context_prefix=""):
+               context_prefix="", db_path=None):
     """
     Library entry point — used by parse-prompt Step 5.5 for per-item routing.
 
-    Given an item-text (one Requirement / one Future-Work bullet), return
-    ranked capability candidates. No DB writes, no side effects.
+    Given an item-text (one Requirement / one Future-Work bullet), return ranked
+    capability candidates. No DB writes, no side effects.
 
-    `context_prefix` (NEW 2026-04-29 Step 5.5 v2): an interpretation/tag-string
-    prepended to `text` before tokenization. Use it to inject workspace tag +
-    subject tags + action verbs that the raw item-text doesn't contain.
-    Example: route_text("Reagier auf das", context_prefix="pmb timeline review verify pr-270")
-    -> tokens contain pmb, timeline, review, verify, pr-270 alongside whatever
-    the raw text yields. Without the prefix, vague items like "Reagier auf das"
-    return 0 candidates. Stefan-Korrektur 2026-04-29: routing should be based on
-    the interpretation of words in context, not the raw words.
+    `context_prefix` is an interpretation/tag-string prepended to `text` before
+    tokenization. Use it to inject workspace tag + subject tags + action verbs
+    that the raw item-text doesn't contain. Example:
+
+        route_text("react to that", context_prefix="frontend timeline review verify pr-42")
+
+    -> tokens contain frontend, timeline, review, verify, pr-42 alongside whatever
+    the raw text yields. Without the prefix, vague items like "react to that" return
+    0 candidates. The rationale: routing should be based on the interpretation of
+    words in context, not the raw words.
     """
     full_text = f"{context_prefix} {text}".strip() if context_prefix else text
     keywords = tokenize(full_text)
     if not keywords:
         return {"intent": "unknown", "complexity": 1, "candidates": []}
     intent = detect_intent(full_text)
-    complexity = detect_complexity(text)  # complexity = on raw, not interpretation
+    complexity = detect_complexity(text)  # complexity scored on raw, not interpretation
     workspace_domain = detect_workspace_domain(cwd)
     kw_counter = Counter(keywords)
     top_kws = [kw for kw, _ in kw_counter.most_common(top_keywords_n)]
     candidates = score_capabilities(set(top_kws), intent, workspace_domain,
                                     max_candidates=max_candidates,
-                                    min_score=min_score)
+                                    min_score=min_score, db_path=db_path)
     return {
         "intent": intent,
         "complexity": complexity,
         "workspace_domain": workspace_domain,
         "keywords": top_kws[:20],
         "candidates": candidates,
-        "context_prefix": context_prefix,  # echo back for traceability
+        "context_prefix": context_prefix,  # echoed back for traceability
     }
 
 
