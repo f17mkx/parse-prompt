@@ -1,0 +1,47 @@
+{
+  "_comment": "Example hook configuration for Claude Code (or any compatible harness). Drop this into your harness's settings file (e.g. ~/.claude/settings.json or equivalent) and adapt paths to where you installed parseprompt. Defaults assume PARSEPROMPT_ROOT=$HOME/.parseprompt.",
+
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "command": "${PARSEPROMPT_ROOT:-$HOME/.parseprompt}/hooks/parse-prompt-tripwire-write.sh",
+        "_comment": "Writes .context/.parse-prompt-tripwire — forces /parse-prompt before any Write/Edit"
+      },
+      {
+        "command": "${PARSEPROMPT_ROOT:-$HOME/.parseprompt}/hooks/route-prompt.py",
+        "_comment": "Classifies intent, queries routing.db, writes prompt_classifications row + .context/todos.md if intent=backlog"
+      }
+    ],
+
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "command": "${PARSEPROMPT_ROOT:-$HOME/.parseprompt}/hooks/parse-prompt-tripwire-check.sh",
+        "_comment": "Blocks Write/Edit until parse-prompt has run for this turn"
+      },
+      {
+        "matcher": "Edit|Write",
+        "command": "${PARSEPROMPT_ROOT:-$HOME/.parseprompt}/hooks/routing-edit-reminder.sh",
+        "_comment": "Advisory reminder when editing routing-infrastructure files"
+      }
+    ],
+
+    "Stop": [
+      {
+        "command": "${PARSEPROMPT_ROOT:-$HOME/.parseprompt}/hooks/route-feedback.py",
+        "_comment": "Updates capability keyword weights based on which capabilities were actually invoked. Silently no-ops if SESSION_DB_PATH is unset."
+      },
+      {
+        "command": "${PARSEPROMPT_ROOT:-$HOME/.parseprompt}/hooks/session-log-finalize.sh",
+        "_comment": "Archives .context/prompt-analysis*.md, notes.md, todos.md to session-logs/<date>-<topic>/"
+      }
+    ]
+  },
+
+  "env": {
+    "PARSEPROMPT_ROOT": "$HOME/.parseprompt",
+    "PARSEPROMPT_DB": "$HOME/.parseprompt/data/routing.db",
+    "_PARSEPROMPT_DOMAIN_MAP_example": "{\"my-saas\": \"frontend\", \"my-api\": \"backend\"}",
+    "_SESSION_DB_PATH_example": "$HOME/Library/Application Support/com.conductor.app/conductor.db"
+  }
+}

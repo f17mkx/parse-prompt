@@ -1,0 +1,30 @@
+node_modules/
+.DS_Store
+.env
+.env.local
+*.log
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Routing DB lives outside the repo by default; if bootstrapped inside, ignore.
+data/routing.db
+data/routing.db-journal
+data/routing.db-wal
+data/routing.db-shm
+
+# Feedback log
+route-feedback.log
+
+# Workspace-local state (in case a user's project uses the same .context pattern)
+.context/
+
+# Session logs (these are tracked in the consuming project, not in this template repo)
+session-logs/

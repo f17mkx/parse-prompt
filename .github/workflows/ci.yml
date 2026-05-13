@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run smoke tests
+        run: python3 -m unittest tests.test_routing -v
+      - name: Validate routing.db schema
+        run: |
+          mkdir -p /tmp/parseprompt-data
+          sqlite3 /tmp/parseprompt-data/routing.db < data/schema.sql
+          sqlite3 /tmp/parseprompt-data/routing.db < data/seed-example.sql
+          # Verify expected tables exist
+          sqlite3 /tmp/parseprompt-data/routing.db ".tables" | grep -q capabilities
+          sqlite3 /tmp/parseprompt-data/routing.db ".tables" | grep -q capability_keywords
+          sqlite3 /tmp/parseprompt-data/routing.db ".tables" | grep -q prompt_classifications
+          # Verify seeded capabilities
+          test "$(sqlite3 /tmp/parseprompt-data/routing.db 'SELECT COUNT(*) FROM capabilities')" -ge 7
+      - name: Lint Python files
+        run: |
+          python3 -m py_compile lib/routing.py
+          python3 -m py_compile hooks/route-prompt.py
+          python3 -m py_compile hooks/route-feedback.py
+          python3 -m py_compile tools/grammar-corpus-pass.py
+      - name: Validate shell hooks
+        run: |
+          bash -n hooks/parse-prompt-tripwire-write.sh
+          bash -n hooks/parse-prompt-tripwire-check.sh
+          bash -n hooks/routing-edit-reminder.sh
+          bash -n hooks/session-log-finalize.sh
